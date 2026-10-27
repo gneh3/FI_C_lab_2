@@ -1,36 +1,22 @@
 #include <stdio.h>
 #include <math.h>
-
 #include "eq.h"
 
-#define EPS 1e-6          // требуемая точность
-#define ITERS_LIMIT 1000  // защита от зависания, если метод расходится
+#define EPS 1e-6
+#define H 1e-5            // шаг для численной производной
+#define ITERS_LIMIT 100  
 
-double max_on_segment(double (*g)(double), double a, double b)
+// F'(x) ~ (F(x+h) - F(x-h)) / 2h
+double d(double (*F)(double), double x)
 {
-	double m = 0;
-	for (int i = 0; i <= 1000; i++)
-	{
-		double v = fabs(g(a + (b - a) * i / 1000));
-		if (v > m) m = v;
-	}
-	return m;
+	return (F(x + H) - F(x - H)) / (2 * H);
 }
 
-double newton_condition_max(double (*F)(double), double (*dF)(double), double (*d2F)(double),
-	double a, double b)
+// F''(x)~(F(x+h)-2F(x)+F(x-h))/h^2
+double d_2(double (*F)(double), double x)
 {
-	double m = 0;
-	for (int i = 0; i <= 1000; i++)
-	{
-		double x = a + (b - a) * i / 1000;
-		double v = fabs(F(x) * d2F(x)) / (dF(x) * dF(x));
-		if (v > m) m = v;
-	}
-	return m;
+	return (F(x + H) - 2 * F(x) + F(x - H)) / (H * H);
 }
-
-// все методы при неудаче возвращают -1 и *iterations = 0.
 
 double dichotomy_method(double (*F)(double), double a, double b, double eps,
 	int* iterations, double* accuracy)
@@ -38,20 +24,23 @@ double dichotomy_method(double (*F)(double), double a, double b, double eps,
 	*iterations = 0;
 	*accuracy = 0;
 
+	double fa = F(a);
+	if (fa * F(b) >= 0)
+	{
+		// на концах один знак
+		*iterations = -1;
+		return a;
+	}
+
 	while (b - a > eps)
 	{
-		double fa = F(a);
-		double fb = F(b);
-		if (fa * fb > 0)
-		{
-			// метод неприменим
-			return -1;
-		}
-
 		double middle = (a + b) / 2;
 		double fmiddle = F(middle);
 		if (fmiddle * fa > 0)
+		{
 			a = middle;     // корень в правой половине
+			fa = fmiddle;
+		}
 		else
 			b = middle;     // в левой
 		(*iterations)++;
@@ -64,61 +53,78 @@ double dichotomy_method(double (*F)(double), double a, double b, double eps,
 double iterations_method(double (*f)(double), double a, double b, double eps, int iters_limit,
 	int* iterations, double* accuracy)
 {
-	double x_prev = (a + b) / 2;
-	double x = f(x_prev);
-	*iterations = 1;
+	double x = (a + b) / 2;
+	double x_prev;
+	*iterations = 0;
 
-	while (fabs(x - x_prev) >= eps)
+	do
 	{
+		// |f'(x)|<1
+		if (fabs(d(f, x)) >= 1)
+		{
+			*iterations = -1;
+			return x;
+		}
+
 		x_prev = x;
 		x = f(x);
 		(*iterations)++;
+
 		if (*iterations == iters_limit || isnan(x) || isinf(x))
 		{
-			// не сошлось
 			*iterations = 0;
 			*accuracy = fabs(x - x_prev);
 			return -1;
 		}
-	}
+	} while (fabs(x - x_prev) >= eps);
 
 	*accuracy = fabs(x - x_prev);
 	return x;
 }
 
-double newton_method(double (*F)(double), double (*dF)(double), double a, double b, double eps,
-	int iters_limit, int* iterations, double* accuracy)
+double newton_method(double (*F)(double), double a, double b, double eps, int iters_limit,
+	int* iterations, double* accuracy)
 {
-	double x_prev = (a + b) / 2;
-	double x = x_prev - F(x_prev) / dF(x_prev);
-	*iterations = 1;
+	double x = (a + b) / 2;
+	double x_prev;
+	*iterations = 0;
 
-	while (fabs(x - x_prev) >= eps)
+	do
 	{
+		double fx = F(x);
+		double d1 = d(F, x);
+		double d2 = d_2(F, x);
+
+		// |F * F''|< (F')^2
+		if (fabs(fx * d2) >= d1 * d1)
+		{
+			*iterations = -1;
+			return x;
+		}
+
 		x_prev = x;
-		x = x_prev - F(x_prev) / dF(x_prev);
+		x = x - fx / d1;
 		(*iterations)++;
+
 		if (*iterations == iters_limit || isnan(x) || isinf(x))
 		{
-			// не сошлось
 			*iterations = 0;
 			*accuracy = fabs(x - x_prev);
 			return -1;
 		}
-	}
+	} while (fabs(x - x_prev) >= eps);
 
 	*accuracy = fabs(x - x_prev);
 	return x;
 }
 
-// одна строка таблицы: метод, корень, корень из таблицы, точность, итерации
-void print_result(const char* method, double root, double table_root, double accuracy, int iterations)
+void print_result(const char* method, double result, double ideal_result, double accuracy, int iterations)
 {
-	if (iterations == 0)
-		printf("%-11s broken\n", method);
+	if (iterations == -1)
+		printf("%-11s condition failed. x = %.4f\n", method, result);
 	else
 		printf("%-11s x = %.7f table: %.4f accuracy: %.2e iterations: %d\n",
-			method, root, table_root, accuracy, iterations);
+			method, result, ideal_result, accuracy, iterations);
 }
 
 int main(void)
@@ -129,27 +135,18 @@ int main(void)
 
 		int it;
 		double acc;
-		double root;
+		double res;
 
 		printf("%s,  [%.1f, %.1f]\n", t.name, t.a, t.b);
 
-		double q_iter = max_on_segment(t.df, t.a, t.b);
-		double q_newton = newton_condition_max(t.F, t.dF, t.d2F, t.a, t.b);
-		printf("check: F(a)*F(b) = %.3f (%s)\n", t.F(t.a) * t.F(t.b),
-			t.F(t.a) * t.F(t.b) < 0 ? "< 0, OK" : "NOT < 0");
-		printf("check: max|f'(x)| = %.3f (%s)\n", q_iter,
-			q_iter < 1 ? "< 1" : "> 1");
-		printf("check: max|F*F''|/(F')^2 = %.3f (%s)\n", q_newton,
-			q_newton < 1 ? "< 1" : "> 1, newton condition failed on [a,b]");
+		res = dichotomy_method(t.F, t.a, t.b, EPS, &it, &acc);
+		print_result("dichotomy", res, t.ideal_result, acc, it);
 
-		root = dichotomy_method(t.F, t.a, t.b, EPS, &it, &acc);
-		print_result("dichotomy", root, t.table_root, acc, it);
+		res = iterations_method(t.f, t.a, t.b, EPS, ITERS_LIMIT, &it, &acc);
+		print_result("iterations", res, t.ideal_result, acc, it);
 
-		root = iterations_method(t.f, t.a, t.b, EPS, ITERS_LIMIT, &it, &acc);
-		print_result("iterations", root, t.table_root, acc, it);
-
-		root = newton_method(t.F, t.dF, t.a, t.b, EPS, ITERS_LIMIT, &it, &acc);
-		print_result("newton", root, t.table_root, acc, it);
+		res = newton_method(t.F, t.a, t.b, EPS, ITERS_LIMIT, &it, &acc);
+		print_result("newton", res, t.ideal_result, acc, it);
 
 		printf("\n");
 	}
